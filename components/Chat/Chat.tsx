@@ -75,6 +75,18 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
     (message: Message, deleteCount?: number, images?: string[]) => Promise<void>
   ) | null>(null);
 
+  useEffect(() => {
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+    homeDispatch({ field: 'loading', value: false });
+    homeDispatch({ field: 'messageIsStreaming', value: false });
+  }, [selectedConversation?.id, homeDispatch]);
+
+  useEffect(() => () => {
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+  }, []);
+
   const buildPromptFromMessages = useCallback((messages: Message[]) => {
     const lines: string[] = [];
     for (const m of messages) {
@@ -171,6 +183,8 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
   const handleSend = useCallback(
     async (message: Message, deleteCount = 0, imagesBase64?: string[]) => {
       if (selectedConversation) {
+        requestControllerRef.current?.abort();
+        stopConversationRef.current = false;
         const retainedMessages = selectedConversation.messages.slice(
           0,
           Math.max(0, selectedConversation.messages.length - deleteCount),
@@ -224,6 +238,9 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
         });
         const controller = new AbortController();
         requestControllerRef.current = controller;
+        const isCurrentRequest = () =>
+          requestControllerRef.current === controller &&
+          retryContextRef.current.selectedConversation?.id === updatedConversation.id;
         let response: Response;
         try {
           response = await fetch(endpoint, {
@@ -234,6 +251,10 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
             signal: controller.signal,
             body,
           });
+          if (!isCurrentRequest()) {
+            await response.body?.cancel();
+            return;
+          }
           if (!response.ok) {
             homeDispatch({ field: 'loading', value: false });
             homeDispatch({ field: 'messageIsStreaming', value: false });
@@ -247,7 +268,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
             if (!navigator.onLine) {
               detail = (detail ? detail + '\n' : '') + 'You appear to be offline.';
             }
-            showErrorToast(title, detail, makeRetry());
+            if (isCurrentRequest()) showErrorToast(title, detail, makeRetry());
             return;
           }
           const data = response.body;
@@ -280,6 +301,10 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
                 break;
               }
               const { value, done: doneReading } = await reader.read();
+              if (!isCurrentRequest()) {
+                await reader.cancel();
+                return;
+              }
               done = doneReading;
               const chunkValue = decoder.decode(value);
               text += chunkValue;
@@ -318,6 +343,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
                 });
               }
             }
+            if (!isCurrentRequest()) return;
             saveConversation(updatedConversation);
             const updatedConversations: Conversation[] = conversations.map(
               (conversation) => {
@@ -347,6 +373,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
               field: 'selectedConversation',
               value: updatedConversation,
             });
+            if (!isCurrentRequest()) return;
             saveConversation(updatedConversation);
             const updatedConversations: Conversation[] = conversations.map(
               (conversation) => {
@@ -365,6 +392,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
             homeDispatch({ field: 'messageIsStreaming', value: false });
           }
         } catch (err) {
+          if (!isCurrentRequest()) return;
           homeDispatch({ field: 'loading', value: false });
           homeDispatch({ field: 'messageIsStreaming', value: false });
           if ((err as any)?.name === 'AbortError') {
@@ -436,6 +464,10 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
       confirm(t<string>('Are you sure you want to clear all messages?')) &&
       selectedConversation
     ) {
+      requestControllerRef.current?.abort();
+      requestControllerRef.current = null;
+      homeDispatch({ field: 'loading', value: false });
+      homeDispatch({ field: 'messageIsStreaming', value: false });
       const { single, all } = updateConversation(
         clearConversationMessages(selectedConversation),
         conversations,

@@ -49,6 +49,8 @@ let apiBodies: any[];
 let toolError: boolean;
 let stall: boolean;
 let searchStarted: boolean;
+let releaseSearch: (() => void) | undefined;
+let ignoreAbort: boolean;
 
 beforeEach(() => {
   roots = [];
@@ -57,6 +59,8 @@ beforeEach(() => {
   toolError = false;
   stall = false;
   searchStarted = false;
+  releaseSearch = undefined;
+  ignoreAbort = false;
   vi.stubGlobal('React', React);
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal(
@@ -98,9 +102,25 @@ beforeEach(() => {
         searchStarted = true;
         if (stall)
           return new Promise((resolve, reject) => {
-            init.signal!.addEventListener('abort', () =>
-              reject(new DOMException('aborted', 'AbortError')),
-            );
+            if (!ignoreAbort)
+              init.signal!.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError')),
+              );
+            releaseSearch = () =>
+              resolve(
+                Response.json({
+                  jsonrpc: '2.0',
+                  id: rpc.id,
+                  result: {
+                    content: [
+                      {
+                        type: 'text',
+                        text: 'https://example.org/source: observed in 2026',
+                      },
+                    ],
+                  },
+                }),
+              );
           });
       }
       const result =
@@ -132,11 +152,13 @@ afterEach(async () => {
 
 async function mount(conversation: Conversation, prompts: any[] = []) {
   let latest: HomeInitialState;
+  let select!: (next: Conversation) => void;
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
   roots.push(root);
   function Harness() {
+    const stop = React.useRef(false);
     const { state, dispatch } = useCreateReducer({
       initialState: {
         ...initialState,
@@ -147,6 +169,13 @@ async function mount(conversation: Conversation, prompts: any[] = []) {
       },
     });
     latest = state;
+    select = (next) => {
+      dispatch({ field: 'selectedConversation', value: next });
+      dispatch({
+        field: 'conversations',
+        value: [...state.conversations, next],
+      });
+    };
     return (
       <HomeContext.Provider
         value={
@@ -167,14 +196,22 @@ async function mount(conversation: Conversation, prompts: any[] = []) {
           } as any
         }
       >
-        <Chat stopConversationRef={{ current: false }} />
+        <Chat stopConversationRef={stop} />
       </HomeContext.Provider>
     );
   }
   await act(async () => {
     root.render(<Harness />);
   });
-  return { container, state: () => latest! };
+  return {
+    container,
+    state: () => latest!,
+    select: async (next: Conversation) => {
+      await act(async () => {
+        select(next);
+      });
+    },
+  };
 }
 async function toggle(container: HTMLElement) {
   await act(async () => {
@@ -384,6 +421,11 @@ describe('composer -> chat request -> MCP -> generation -> displayed result', ()
     });
     expect(app.state().messageIsStreaming).toBe(false);
     expect(apiBodies).toHaveLength(1);
+    stall = false;
+    await send(app.container, 'research after stopping');
+    expect(app.state().selectedConversation!.messages.at(-1)?.role).toBe(
+      'assistant',
+    );
   });
 });
 
@@ -467,4 +509,51 @@ it('ignores an old error Retry after clearing the conversation', async () => {
   });
   expect(apiBodies).toHaveLength(1);
   expect(app.state().selectedConversation!.messages).toHaveLength(0);
+});
+
+it('retains the reset identity when an old pending search eventually responds', async () => {
+  const app = await mount(fresh('pending-clear'));
+  await toggle(app.container);
+  const oldId = app.state().selectedConversation!.webSearchSessionId;
+  stall = true;
+  ignoreAbort = true;
+  await send(app.container, 'old research');
+  expect(searchStarted).toBe(true);
+  await act(async () => {
+    Array.from(app.container.querySelectorAll('button'))
+      .find((button) => button.title === 'Clear all')!
+      .click();
+  });
+  const resetId = app.state().selectedConversation!.webSearchSessionId;
+  expect(resetId).not.toBe(oldId);
+  await act(async () => {
+    releaseSearch!();
+  });
+  expect(app.state().selectedConversation!.webSearchSessionId).toBe(resetId);
+  expect(app.state().selectedConversation!.messages).toHaveLength(0);
+  expect(app.state().messageIsStreaming).toBe(false);
+});
+
+it('keeps a new conversation when a previous conversation finishes late', async () => {
+  const app = await mount(fresh('pending-old'));
+  await toggle(app.container);
+  stall = true;
+  ignoreAbort = true;
+  await send(app.container, 'old research');
+  const oldId = mcpCalls[0].arguments.session_id;
+  const releaseOld = releaseSearch!;
+  await app.select(fresh('new-conversation'));
+  stall = false;
+  await toggle(app.container);
+  await send(app.container, 'new research');
+  const newId = app.state().selectedConversation!.webSearchSessionId;
+  expect(newId).not.toBe(oldId);
+  await act(async () => {
+    releaseOld();
+  });
+  expect(app.state().selectedConversation!.id).toBe('new-conversation');
+  expect(app.state().selectedConversation!.webSearchSessionId).toBe(newId);
+  expect(app.state().selectedConversation!.messages[0].content).toBe(
+    'new research',
+  );
 });
