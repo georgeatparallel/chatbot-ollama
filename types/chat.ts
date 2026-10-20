@@ -20,11 +20,17 @@ export interface Message {
 
 export type Role = 'assistant' | 'user';
 
+export interface WebSearchRequest {
+  query: string;
+  sessionId: string;
+}
+
 export interface ChatBody {
   model: string;
   system: string;
   prompt: string;
   images?: string[];
+  webSearch?: WebSearchRequest;
   options?: 
     { temperature: number }
 }
@@ -37,4 +43,6 @@ export interface Conversation {
   prompt: string;
   temperature: number;
   folderId: string | null;
+  webSearchEnabled?: boolean;
+  webSearchSessionId?: string;
 }

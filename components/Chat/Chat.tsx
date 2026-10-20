@@ -24,6 +24,11 @@ import { ChatBody, Conversation, Message } from '@/types/chat';
 
 import HomeContext from '@/pages/api/home/home.context';
 
+import {
+  clearConversationMessages,
+  conversationSearch,
+} from '@/utils/app/webSearch';
+
 import Spinner from '../Spinner';
 import { ChatInput } from './ChatInput';
 import { ChatLoader } from './ChatLoader';
@@ -63,6 +68,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const requestControllerRef = useRef<AbortController | null>(null);
 
   const buildPromptFromMessages = useCallback((messages: Message[]) => {
     const lines: string[] = [];
@@ -190,6 +196,9 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
           prompt: visiblePrompt,
           images: imagesBase64 && imagesBase64.length ? imagesBase64 : undefined,
           options: { temperature: updatedConversation.temperature },
+          webSearch: imagesBase64?.length
+            ? undefined
+            : conversationSearch(updatedConversation, message),
         };
         const endpoint = getEndpoint();
         let body;
@@ -197,6 +206,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
           ...chatBody,
         });
         const controller = new AbortController();
+        requestControllerRef.current = controller;
         let response: Response;
         try {
           response = await fetch(endpoint, {
@@ -220,14 +230,14 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
             if (!navigator.onLine) {
               detail = (detail ? detail + '\n' : '') + 'You appear to be offline.';
             }
-            showErrorToast(title, detail, () => handleSend(message, 1));
+            showErrorToast(title, detail, () => handleSend(message, deleteCount, imagesBase64));
             return;
           }
           const data = response.body;
           if (!data) {
             homeDispatch({ field: 'loading', value: false });
             homeDispatch({ field: 'messageIsStreaming', value: false });
-            showErrorToast('Empty response', 'No data received from API.', () => handleSend(message, 1));
+            showErrorToast('Empty response', 'No data received from API.', () => handleSend(message, deleteCount, imagesBase64));
             return;
           }
           if (!false) {
@@ -348,8 +358,12 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
           const detail = !navigator.onLine
             ? `${msg}\nYou appear to be offline.`
             : msg;
-          showErrorToast('Request error', detail, () => handleSend(message, 1));
+          showErrorToast('Request error', detail, () => handleSend(message, deleteCount, imagesBase64));
           return;
+        } finally {
+          if (requestControllerRef.current === controller) {
+            requestControllerRef.current = null;
+          }
         }
       }
     },
@@ -403,10 +417,12 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
       confirm(t<string>('Are you sure you want to clear all messages?')) &&
       selectedConversation
     ) {
-      handleUpdateConversation(selectedConversation, {
-        key: 'messages',
-        value: [],
-      });
+      const { single, all } = updateConversation(
+        clearConversationMessages(selectedConversation),
+        conversations,
+      );
+      homeDispatch({ field: 'selectedConversation', value: single });
+      homeDispatch({ field: 'conversations', value: all });
     }
   };
 
@@ -613,6 +629,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
               handleSend(message, 0, imagesBase64);
             }}
             onScrollDownClick={handleScrollDown}
+            onStop={() => requestControllerRef.current?.abort()}
             onRegenerate={() => {
               if (currentMessage) {
                 handleSend(currentMessage, 2);
