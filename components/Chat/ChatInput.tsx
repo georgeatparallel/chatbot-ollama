@@ -534,7 +534,7 @@ export const ChatInput = ({
                     const result = reader.result as string;
                     const base64 = result.split(',')[1] || result;
                     const text = content && content.trim().length > 0 ? content : (t('Describe the image') || 'Describe the image');
-                    onSend({ role: 'user', content: text }, [base64]);
+                    onSend({ role: 'user', content: text, webSearchExcluded: true }, [base64]);
                     setContent('');
                     toast.success(t('Image attached') || 'Image attached');
                     setShowImageUpload(false);

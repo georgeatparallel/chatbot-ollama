@@ -386,3 +386,85 @@ describe('composer -> chat request -> MCP -> generation -> displayed result', ()
     expect(apiBodies).toHaveLength(1);
   });
 });
+
+it('disabling permission before an existing error Retry must keep the retry local', async () => {
+  const app = await mount(fresh('review-permission'));
+  await toggle(app.container);
+  toolError = true;
+  await send(app.container, 'research this question');
+  const callback = vi.mocked(toast.custom).mock.calls.at(-1)![0] as any;
+  await toggle(app.container);
+  expect(app.state().selectedConversation!.webSearchEnabled).toBe(false);
+  const toastElement = callback({ id: 'error-toast', visible: true });
+  function findRetry(element: any): any {
+    if (element?.props?.children === 'Retry') return element;
+    for (const child of React.Children.toArray(element?.props?.children)) {
+      if (typeof child !== 'object') continue;
+      const result = findRetry(child);
+      if (result) return result;
+    }
+  }
+  toolError = false;
+  await act(async () => {
+    findRetry(toastElement).props.onClick();
+  });
+  expect(apiBodies.at(-1).webSearch).toBeUndefined();
+});
+
+it('regenerating an image-upload response must keep the upload local', async () => {
+  const app = await mount(fresh('review-image'));
+  await toggle(app.container);
+  await act(async () => {
+    app.container
+      .querySelector<HTMLButtonElement>('button[title="Attach Image"]')!
+      .click();
+  });
+  await act(async () => {
+    const input =
+      app.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', {
+      value: [
+        new File(['private image'], 'private.png', { type: 'image/png' }),
+      ],
+    });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+  expect(apiBodies.at(-1).images).toHaveLength(1);
+  expect(mcpCalls).toHaveLength(0);
+  const regenerate = Array.from(app.container.querySelectorAll('button')).find(
+    (button) => button.textContent?.includes('Regenerate response'),
+  )!;
+  await act(async () => {
+    regenerate.click();
+  });
+  expect(apiBodies.at(-1).webSearch).toBeUndefined();
+});
+
+it('ignores an old error Retry after clearing the conversation', async () => {
+  const app = await mount(fresh('clear-retry'));
+  await toggle(app.container);
+  toolError = true;
+  await send(app.container, 'failed research');
+  const renderToast = vi.mocked(toast.custom).mock.calls.at(-1)![0] as any;
+  const toastElement = renderToast({ id: 'old-error', visible: true });
+  const findRetry = (element: any): any => {
+    if (element?.props?.children === 'Retry') return element;
+    for (const child of React.Children.toArray(element?.props?.children)) {
+      if (typeof child === 'object') {
+        const found = findRetry(child);
+        if (found) return found;
+      }
+    }
+  };
+  await act(async () => {
+    Array.from(app.container.querySelectorAll('button'))
+      .find((button) => button.title === 'Clear all')!
+      .click();
+  });
+  await act(async () => {
+    findRetry(toastElement).props.onClick();
+  });
+  expect(apiBodies).toHaveLength(1);
+  expect(app.state().selectedConversation!.messages).toHaveLength(0);
+});

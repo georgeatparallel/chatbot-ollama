@@ -69,6 +69,11 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const retryContextRef = useRef({ selectedConversation, messageIsStreaming });
+  retryContextRef.current = { selectedConversation, messageIsStreaming };
+  const sendRef = useRef<(
+    (message: Message, deleteCount?: number, images?: string[]) => Promise<void>
+  ) | null>(null);
 
   const buildPromptFromMessages = useCallback((messages: Message[]) => {
     const lines: string[] = [];
@@ -166,22 +171,34 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
   const handleSend = useCallback(
     async (message: Message, deleteCount = 0, imagesBase64?: string[]) => {
       if (selectedConversation) {
-        let updatedConversation: Conversation;
-        if (deleteCount) {
-          const updatedMessages = [...selectedConversation.messages];
-          for (let i = 0; i < deleteCount; i++) {
-            updatedMessages.pop();
-          }
-          updatedConversation = {
-            ...selectedConversation,
-            messages: [...updatedMessages, message],
+        const retainedMessages = selectedConversation.messages.slice(
+          0,
+          Math.max(0, selectedConversation.messages.length - deleteCount),
+        );
+        let updatedConversation: Conversation = {
+          ...selectedConversation,
+          messages: [...retainedMessages, message],
+        };
+        const makeRetry = () => {
+          const failedId = updatedConversation.id;
+          const failedMessages = [...updatedConversation.messages];
+          return () => {
+            const latest = retryContextRef.current;
+            const conversation = latest.selectedConversation;
+            // An old toast must not revive cleared messages or another chat.
+            if (
+              !conversation || conversation.id !== failedId || latest.messageIsStreaming ||
+              conversation.messages.length !== failedMessages.length ||
+              failedMessages.some((item, index) => conversation.messages[index] !== item)
+            ) return;
+            // Use the current permission/settings, even if changed after failure.
+            sendRef.current?.(
+              message,
+              conversation.messages.length - retainedMessages.length,
+              imagesBase64,
+            );
           };
-        } else {
-          updatedConversation = {
-            ...selectedConversation,
-            messages: [...selectedConversation.messages, message],
-          };
-        }
+        };
         homeDispatch({
           field: 'selectedConversation',
           value: updatedConversation,
@@ -230,14 +247,14 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
             if (!navigator.onLine) {
               detail = (detail ? detail + '\n' : '') + 'You appear to be offline.';
             }
-            showErrorToast(title, detail, () => handleSend(message, deleteCount, imagesBase64));
+            showErrorToast(title, detail, makeRetry());
             return;
           }
           const data = response.body;
           if (!data) {
             homeDispatch({ field: 'loading', value: false });
             homeDispatch({ field: 'messageIsStreaming', value: false });
-            showErrorToast('Empty response', 'No data received from API.', () => handleSend(message, deleteCount, imagesBase64));
+            showErrorToast('Empty response', 'No data received from API.', makeRetry());
             return;
           }
           if (!false) {
@@ -358,7 +375,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
           const detail = !navigator.onLine
             ? `${msg}\nYou appear to be offline.`
             : msg;
-          showErrorToast('Request error', detail, () => handleSend(message, deleteCount, imagesBase64));
+          showErrorToast('Request error', detail, makeRetry());
           return;
         } finally {
           if (requestControllerRef.current === controller) {
@@ -375,6 +392,8 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
       showErrorToast,
     ],
   );
+
+  sendRef.current = handleSend;
 
   const scrollToBottom = useCallback(() => {
     if (autoScrollEnabled) {

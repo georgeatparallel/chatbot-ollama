@@ -3,6 +3,7 @@ import { OllamaModel } from './ollama';
 export interface Message {
   role: Role;
   content: string;
+  webSearchExcluded?: boolean;
   file?: {
     name: string;
     size: number;
